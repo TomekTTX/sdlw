@@ -117,13 +117,16 @@ namespace sdlw {
     };
 
     class Component {
+    public:
+        enum EventStatus { IGNORED, HANDLED, FORWARDED };
     protected:
         SDL_Rect rect;
-        CompColors rawColors;
         CompColors colors{};
         Window *win{};
         bool hovered = false, shown = true;
     public:
+        CompColors rawColors;
+
         Component(SDL_Rect rect, const CompColors &colors) :
             rect(rect), rawColors(colors) {}
 
@@ -143,10 +146,9 @@ namespace sdlw {
         inline virtual void setWindow(Window *window) { win = window; }
         inline virtual void translate(int x, int y) { rect.x += x; rect.y += y; }
         inline void setPos(int x, int y) { translate(x - rect.x, y - rect.y); }
-        inline void setColors(const CompColors &colors) { rawColors = colors; }
         void mapColors(const Graphics &g);
 
-        virtual bool handleEvent(const SDL_Event &event) = 0;
+        virtual EventStatus handleEvent(const SDL_Event &event) = 0;
         virtual void draw(Graphics &g) = 0;
 
         template <typename T>
@@ -157,18 +159,39 @@ namespace sdlw {
         bool handleHoverHL(const SDL_Event &event);
         int thisWasClicked(const SDL_Event &event) const;
         int clickOutside(const SDL_Event &event) const;
+
+        template <typename T>
+        EventStatus multihandleEvent(const SDL_Event &event, T& iterable) {
+            EventStatus status = IGNORED;
+            for (auto &elem : iterable) {
+                switch (elem->handleEvent(event)) {
+                case HANDLED:
+                    return HANDLED;
+                case FORWARDED:
+                    status = FORWARDED;
+                    break;
+                case IGNORED:
+                default:
+                    break;
+                }
+            }
+            return status;
+        }
     };
 
     class Panel : public Component {
+    public:
+        using CompVec = std::vector<std::unique_ptr<Component>>;
     protected:
-        std::vector<std::unique_ptr<Component>> comps;
+        CompVec comps{};
     public:
         Panel(SDL_Rect rect, int bgcolor, int linecolor) :
             Component(rect, { bgcolor, linecolor }) {}
 
         inline std::size_t count() const { return comps.size(); }
+        inline CompVec &components() { return comps; }
 
-        virtual bool handleEvent(const SDL_Event &event) override;
+        virtual EventStatus handleEvent(const SDL_Event &event) override;
         virtual void draw(Graphics &g) override;
         virtual void translate(int x, int y) override;
         void setWindow(Window *window) override;
@@ -196,9 +219,9 @@ namespace sdlw {
 
         void translate(int x, int y) override;
 
-        virtual bool handleEvent(const SDL_Event &event) override;
+        virtual EventStatus handleEvent(const SDL_Event &event) override;
         Component *addComponent(std::unique_ptr<Component> &&comp) override;
-    private:
+
         void scrollContent();
     };
 
@@ -209,23 +232,31 @@ namespace sdlw {
         Text(SDL_Rect rect, std::string_view text, int color) :
             Component(rect, { 0,0,color }), text(text) {}
 
-        virtual inline bool handleEvent(const SDL_Event &event) override { return false; }
+        virtual inline EventStatus handleEvent(const SDL_Event &event) override {
+            return EventStatus::IGNORED;
+        }
         inline void draw(Graphics &g) override {
             if (shown) g.drawString(rect, text, win->font(), colors.text);
         }
     };
 
     class Button : public Component {
+    public:
+        using Callback = std::function<void(Button *)>;
     private:
-        std::function<void(Button *)> callback;
+        Callback callback{};
     public:
         std::string text{};
 
-        Button(SDL_Rect rect, std::string_view text, const CompColors &colors,
-            std::function<void(Button *)> callback) :
-            Component(rect, colors), text(text), callback(std::move(callback)) {}
+        Button(SDL_Rect rect, std::string_view text, const CompColors &colors) :
+            Component(rect, colors), text(text) {}
+        Button(SDL_Rect rect, std::string_view text,
+            const CompColors &colors, Callback &&callback) :
+            Component(rect, colors), text(text), callback(callback) {}
 
-        virtual bool handleEvent(const SDL_Event &event) override;
+        inline void setCallback(Callback &&cb) { callback = std::move(cb); }
+
+        virtual EventStatus handleEvent(const SDL_Event &event) override;
         virtual void draw(Graphics &g) override;
     };
 
@@ -249,7 +280,7 @@ namespace sdlw {
         virtual void setWindow(Window *window) override;
         void translate(int x, int y) override;
 
-        virtual bool handleEvent(const SDL_Event &event) override;
+        virtual EventStatus handleEvent(const SDL_Event &event) override;
         virtual void draw(Graphics &g) override;
     protected:
         inline void adjustPanel() {
@@ -272,7 +303,7 @@ namespace sdlw {
 
             inline int index() const { return ind; }
 
-            virtual bool handleEvent(const SDL_Event &event) override;
+            virtual EventStatus handleEvent(const SDL_Event &event) override;
             virtual void draw(Graphics &g) override;
         };
     private:
@@ -327,7 +358,7 @@ namespace sdlw {
             val = min + 1.f * newStep * step; dragDiff({ 0,0 });
         }
 
-        bool handleEvent(const SDL_Event &event) override;
+        EventStatus handleEvent(const SDL_Event &event) override;
         void draw(Graphics &g) override;
     private:  
         // pixels per step
@@ -362,7 +393,7 @@ namespace sdlw {
         inline void setAutoHide(bool val = true) { autoHide = val; }
         inline void setCallback(Callback &&cb) { onConfirm = std::move(cb); }
 
-        bool handleEvent(const SDL_Event &event) override;
+        EventStatus handleEvent(const SDL_Event &event) override;
         void draw(Graphics &g) override;
 
         void insertChar(char chr, std::size_t index);
@@ -388,12 +419,58 @@ namespace sdlw {
         bool setColor(const std::string &hexStr);
         void setWindow(Window *window) override;
 
-        bool handleEvent(const SDL_Event &event) override;
+        EventStatus handleEvent(const SDL_Event &event) override;
         void draw(Graphics &g) override;
     private:
         std::unique_ptr<Panel> makePanel() const;
         std::unique_ptr<TextInput> makeInput();
         void finalize();
         static std::string hex(char c);
+    };
+
+    class Dropdown : public Expandable {
+    private:
+        struct MiniPanel : public Component {
+            int index{};
+            std::unique_ptr<Component> mainPart{};
+            std::unique_ptr<Button> up{}, down{}, del{};
+            Dropdown *parent;
+
+            MiniPanel(std::unique_ptr<Component> &&mainPart,
+                Dropdown *parent, bool allowDel, bool allowSwap);
+
+            void translate(int x, int y) override;
+            void setWindow(Window *window) override;
+
+            EventStatus handleEvent(const SDL_Event &event) override;
+            void draw(Graphics &g) override;
+        };
+    public:
+        using FactoryCallback = std::function<std::unique_ptr<Component>(int)>;
+        enum Flags { ADD = 0x1, DEL = 0x2, SWAP = 0x4 };
+
+        static constexpr int buttonSize = 30;
+        static constexpr int buttonSpace = 10;
+    private:
+        SDL_Rect elemRect;
+        std::unique_ptr<Button> addButton{};
+        short flags{};
+        Panel::CompVec &elems;
+    public:
+        Dropdown(SDL_Rect rect, SDL_Rect elemRect, std::string_view text,
+            short flags, int numShown, const CompColors &colors,
+            ExpandDir expDir = ExpandDir::DOWN);
+
+        Component *addComponent(std::unique_ptr<Component> &&comp);
+        void removeAt(int index);
+        void swapElems(int ind1, int ind2);
+        void setWindow(Window *window) override;
+        void setFactory(FactoryCallback &&fcb);
+
+        EventStatus handleEvent(const SDL_Event &event) override;
+        void draw(Graphics &g) override;
+    private:
+        std::unique_ptr<ScrollPanel> makePanel(const SDL_Rect &rect, int numShown);
+        void reindex(int from = 0);
     };
 }

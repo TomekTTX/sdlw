@@ -169,9 +169,10 @@ namespace sdlw {
             if (this->handleEvent(event))
                 continue;
             for (const auto &[_, comp] : components) {
-                if (comp->handleEvent(event)) {
+                if (auto status = comp->handleEvent(event)) {
                     pendingUpdate = true;
-                    break;
+                    if (status == Component::EventStatus::HANDLED)
+                        break;
                 }
             }
         }
@@ -218,12 +219,13 @@ namespace sdlw {
         return 0;
     }
 
-    bool Panel::handleEvent(const SDL_Event &event) {
-        if (!shown) return false;
-        for (const auto &comp : comps)
-            if (comp->handleEvent(event))
-                return true;
-        return false;
+    Component::EventStatus Panel::handleEvent(const SDL_Event &event) {
+        if (!shown) return EventStatus::IGNORED;
+        return multihandleEvent(event, comps);
+        //for (const auto &comp : comps)
+        //    if (auto status = comp->handleEvent(event))
+        //        return EventStatus::HANDLED;
+        //return EventStatus::IGNORED;
     }
 
     void Panel::draw(Graphics &g) {
@@ -263,17 +265,17 @@ namespace sdlw {
         scrollBegin.y += y;
     }
 
-    bool ScrollPanel::handleEvent(const SDL_Event &event) {
-        if (!shown) return false;
-        if (Panel::handleEvent(event)) return true;
-        if (event.type != SDL_MOUSEWHEEL) return false;
+    Component::EventStatus ScrollPanel::handleEvent(const SDL_Event &event) {
+        if (!shown) return IGNORED;
+        if (Panel::handleEvent(event)) return HANDLED;
+        if (event.type != SDL_MOUSEWHEEL) return IGNORED;
 
         int offset = sgn(event.wheel.y);
         if (index + offset >= 0 && index + offset + numShown <= (int)comps.size()) {
             index += offset;
             scrollContent();
         }
-        return true;
+        return HANDLED;
     }
 
     Component *ScrollPanel::addComponent(std::unique_ptr<Component> &&comp) {
@@ -297,14 +299,14 @@ namespace sdlw {
         }
     }
 
-    bool Button::handleEvent(const SDL_Event &event) {
-        if (!shown) return false;
-        if (handleHoverHL(event)) return true;
+    Component::EventStatus Button::handleEvent(const SDL_Event &event) {
+        if (!shown || !callback) return IGNORED;
+        if (handleHoverHL(event)) return HANDLED;
         if (thisWasClicked(event)) {
             callback(this);
-            return true;
+            return HANDLED;
         }
-        return false;
+        return IGNORED;
     }
 
     void Button::draw(Graphics &g) {
@@ -356,21 +358,21 @@ namespace sdlw {
         panel->mapColors(win->graphics());
     }
 
-    bool Expandable::handleEvent(const SDL_Event &event) {
-        if (!shown) return false;
-        if (handleHoverHL(event)) return true;
-        if (panel->handleEvent(event)) return true;
+    Component::EventStatus Expandable::handleEvent(const SDL_Event &event) {
+        if (!shown) return IGNORED;
+        if (handleHoverHL(event)) return HANDLED;
+        if (panel->handleEvent(event)) return HANDLED;
         if (thisWasClicked(event) == 1) {
             toggleExpanded();
-            return true;
+            return FORWARDED;
         }
         if (event.type == SDL_MOUSEBUTTONDOWN
             && expanded
             && !panel->posInside({ event.button.x, event.button.y })) {
             setExpanded(false);
-            return false;
+            return FORWARDED;
         }
-        return false;
+        return IGNORED;
     }
 
     void Expandable::draw(Graphics &g) {
@@ -385,15 +387,15 @@ namespace sdlw {
         panel->translate(x, y);
     }
 
-    bool ComboBox::Elem::handleEvent(const SDL_Event &event) {
-        if (!shown) return false;
-        if (handleHoverHL(event)) return true;
+    Component::EventStatus ComboBox::Elem::handleEvent(const SDL_Event &event) {
+        if (!shown) return IGNORED;
+        if (handleHoverHL(event)) return HANDLED;
         if (thisWasClicked(event)) {
             comboBox->setSelection(ind);
             comboBox->setExpanded(false);
-            return true;
+            return HANDLED;
         }
-        return false;
+        return IGNORED;
     }
 
     void ComboBox::Elem::draw(Graphics &g) {
@@ -416,41 +418,41 @@ namespace sdlw {
     void ComboBox::finalizePanel() {
         for (int i = 0; i < (int)options.size(); ++i)
             panel->addComponent(std::make_unique<Elem>(rect, rawColors, i, options[i], this));
-        panel->setColors(rawColors);
+        panel->rawColors = rawColors;
         panel->setWindow(win);
     }
 
-    bool Slider::handleEvent(const SDL_Event &event) {
-        if (!shown) return false;
+    Component::EventStatus Slider::handleEvent(const SDL_Event &event) {
+        if (!shown) return IGNORED;
         const SDL_Point p = { event.button.x, event.button.y };
         const bool inRect = SDL_PointInRect(&p, &sliderRect);
         switch (event.type) {
         case SDL_MOUSEMOTION:
             if (hovered != inRect) {
                 hovered = inRect;
-                return true;
+                return HANDLED;
             }
             if (dragging) {
                 dragDiff(p - mousePos);
                 checkCallback();
                 mousePos = p;
-                return true;
+                return HANDLED;
             }
             break;
         case SDL_MOUSEBUTTONDOWN:
             if (inRect) {
                 mousePos = p;
                 dragging = true;
-                return true;
+                return HANDLED;
             }
             break;
         case SDL_MOUSEBUTTONUP:
             dragging = false;
-            break;
+            return FORWARDED;
         default:
             break;
         }
-        return false;
+        return IGNORED;
     }
 
     void Slider::draw(Graphics &g) {
@@ -533,7 +535,7 @@ namespace sdlw {
                 std::make_unique<Slider>(r, 0, 255, 1, cols, false, 13)
             )->as<Slider>();
         }
-        panel->setColors(rawColors);
+        panel->rawColors = rawColors;
         panel->setWindow(win);
         panel->mapColors(win->graphics());
         input->setWindow(win);
@@ -573,22 +575,22 @@ namespace sdlw {
         return std::string{ hx[(c >> 4) & 0xF] } + hx[c & 0xF];
     }
 
-    bool ColorSelect::handleEvent(const SDL_Event &event) {
-        if (!shown) return false;
+    Component::EventStatus ColorSelect::handleEvent(const SDL_Event &event) {
+        if (!shown) return IGNORED;
         if (thisWasClicked(event)) {
             if (input->isVisible()) {
                 input->deactivate();
                 toggleExpanded();
-                return true;
+                return HANDLED;
             }
             if (expanded) {
                 input->clear();
                 input->activate();
-                return true;
+                return HANDLED;
             }
         }
         if (input->handleEvent(event))
-            return true;
+            return HANDLED;
         return Expandable::handleEvent(event);
     }
 
@@ -622,25 +624,25 @@ namespace sdlw {
             onConfirm(text);
     }
 
-    bool TextInput::handleEvent(const SDL_Event &event) {
-        if (!shown) return false;
+    Component::EventStatus TextInput::handleEvent(const SDL_Event &event) {
+        if (!shown) return IGNORED;
         if (!active && thisWasClicked(event)) {
             activate();
-            return true;
+            return HANDLED;
         }
         if (active) {
             if (clickOutside(event)) {
                 deactivate();
-                return false;
+                return IGNORED;
             }
             if (event.type == SDL_TEXTINPUT) {
                 insertChar(event.text.text[0], caretPos++);
-                return true;
+                return HANDLED;
             }
             if (event.type == SDL_KEYDOWN)
-                return handleKey(event.key.keysym.sym);
+                return handleKey(event.key.keysym.sym) ? HANDLED : IGNORED;
         }
-        return false;
+        return IGNORED;
     }
 
     bool TextInput::handleKey(int kp) {
@@ -693,5 +695,163 @@ namespace sdlw {
     void TextInput::insertChar(char chr, std::size_t index) {
         if (index < 0 || index > text.length()) return;
         text = text.substr(0, index) + char(chr) + text.substr(index);
+    }
+
+    Dropdown::MiniPanel::MiniPanel(std::unique_ptr<Component> &&comp,
+        Dropdown *parent, bool allowDel, bool allowSwap) :
+        Component(SDL_Rect{}, parent->rawColors),
+        mainPart(std::move(comp)), parent(parent) {
+        if (allowDel) {
+            const SDL_Rect r{
+                mainPart->x() + mainPart->w() + 2 * buttonSize + 3 * buttonSpace,
+                mainPart->y() + (mainPart->h() - buttonSize) / 2,
+                buttonSize,
+                buttonSize
+            };
+            del = std::make_unique<Button>(r, "X", rawColors,
+                [this](Button *) { this->parent->removeAt(index); });
+        }
+        if (allowSwap) {
+            SDL_Rect r{
+                mainPart->x() + mainPart->w() + buttonSpace,
+                mainPart->y() + (mainPart->h() - buttonSize) / 2,
+                buttonSize,
+                buttonSize
+            };
+            up = std::make_unique<Button>(r, "U", rawColors,
+                [this](Button *) { this->parent->swapElems(index, index - 1); });
+            r.x += (buttonSize + buttonSpace);
+            down = std::make_unique<Button>(r, "D", rawColors,
+                [this](Button *) { this->parent->swapElems(index, index + 1); });
+        }
+    }
+
+    void Dropdown::MiniPanel::translate(int x, int y) {
+        Component::translate(x, y);
+        mainPart->translate(x, y);
+        if (up) up->translate(x, y);
+        if (down) down->translate(x, y);
+        if (del) del->translate(x, y);
+    }
+
+    void Dropdown::MiniPanel::setWindow(Window *window) {
+        Component::setWindow(window);
+        mainPart->setWindow(window);
+        if (up) up->setWindow(window);
+        if (down) down->setWindow(window);
+        if (del) del->setWindow(window);
+        mainPart->mapColors(window->graphics());
+        if (up) up->mapColors(window->graphics());
+        if (down) down->mapColors(window->graphics());
+        if (del) del->mapColors(window->graphics());
+    }
+
+    Component::EventStatus Dropdown::MiniPanel::handleEvent(const SDL_Event &event) {
+        return shown && (mainPart->handleEvent(event)
+            || (up && up->handleEvent(event))
+            || (down && down->handleEvent(event))
+            || (del && del->handleEvent(event))) ? HANDLED : IGNORED;
+    }
+
+    void Dropdown::MiniPanel::draw(Graphics &g) {
+        if (!shown) return;
+        mainPart->draw(g);
+        if (up) up->draw(g);
+        if (down) down->draw(g);
+        if (del) del->draw(g);
+    }
+
+    Dropdown::Dropdown(SDL_Rect rect, SDL_Rect elemRect, std::string_view text,
+        short flags, int numShown, const CompColors &colors, ExpandDir expDir) :
+        Expandable(rect, text, colors, makePanel(elemRect, numShown), expDir),
+        elemRect(elemRect), flags(flags), elems(panel->components()) {
+
+        panel->rawColors = rawColors;
+        if (flags & Flags::ADD) {
+            const SDL_Rect r{
+                panel->x() + buttonSpace,
+                panel->y() + panel->h() - (elemRect.h + buttonSize) / 2,
+                buttonSize, buttonSize
+            };
+            addButton = std::make_unique<Button>(r, "+", rawColors);
+        }
+    }
+
+    Component *Dropdown::addComponent(std::unique_ptr<Component> &&comp) {
+        auto mp = std::make_unique<MiniPanel>(std::move(comp), this,
+            flags & Flags::DEL, flags & Flags::SWAP);
+        mp->rawColors = rawColors;
+        mp->index = (int)elems.size();
+        mp->setWindow(win);
+        mp->setDims(elemRect.w + 4 * buttonSpace + 3 * buttonSize, elemRect.h);
+        //mp->mapColors(win->graphics());
+
+        return panel->addComponent(std::move(mp))->as<MiniPanel>()->mainPart.get();
+    }
+
+    void Dropdown::removeAt(int index) {
+        if (index >= 0 && index < (int)elems.size()) {
+            elems.erase(elems.begin() + index);
+            reindex(index);
+        }
+    }
+
+    void Dropdown::swapElems(int ind1, int ind2) {
+        if (ind1 < 0
+            || ind2 < 0
+            || ind1 >= (int)elems.size()
+            || ind2 >= (int)elems.size())
+            return;
+
+        std::swap(elems[ind1], elems[ind2]);
+        std::swap(
+            elems[ind1]->as<MiniPanel>()->index,
+            elems[ind2]->as<MiniPanel>()->index
+        );
+    }
+
+    void Dropdown::setWindow(Window *window) {
+        Expandable::setWindow(window);
+        addButton->setWindow(window);
+        addButton->mapColors(window->graphics());
+    }
+
+    void Dropdown::setFactory(FactoryCallback &&fcb) {
+        addButton->setCallback([this, fact = std::move(fcb)](Button *) {
+            addComponent(fact((int)elems.size()));
+            //elems.push_back(fact((int)elems.size()));
+            //elems.back()->setDims(elemRect.w, elemRect.h);
+            //elems.back()->setWindow(win);
+            //elems.back()->mapColors(win->graphics());
+        });
+    }
+
+    void Dropdown::draw(Graphics &g) {
+        Expandable::draw(g);
+        if (shown && expanded)
+            addButton->draw(g);
+    }
+
+    Component::EventStatus Dropdown::handleEvent(const SDL_Event &event) {
+        if (!shown) return IGNORED;
+        if (auto stat = addButton->handleEvent(event))
+            return stat;
+        if (auto stat = Expandable::handleEvent(event)) {
+            panel->as<ScrollPanel>()->scrollContent();
+            return stat;
+        }
+        return IGNORED;
+    }
+
+    std::unique_ptr<ScrollPanel> Dropdown::makePanel(const SDL_Rect &rect, int numShown) {
+        const SDL_Rect panelRect{ 0, 0,
+            rect.w + 4 * buttonSpace + 3 * buttonSize, rect.h * (numShown + 1) };
+        return std::make_unique<ScrollPanel>(panelRect, 0, 0, numShown);
+    }
+
+    void Dropdown::reindex(int from) {
+        for (std::size_t i = from; i < elems.size(); ++i) {
+            elems[i]->as<MiniPanel>()->index = (int)i;
+        }
     }
 }

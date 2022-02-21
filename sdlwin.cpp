@@ -412,7 +412,8 @@ namespace sdlw {
 
     void ComboBox::setWindow(Window *window) {
         Expandable::setWindow(window);
-        finalizePanel();
+        if (!wasInit)
+            finalizePanel();
     }
 
     void ComboBox::finalizePanel() {
@@ -420,6 +421,13 @@ namespace sdlw {
             panel->addComponent(std::make_unique<Elem>(rect, rawColors, i, options[i], this));
         panel->rawColors = rawColors;
         panel->setWindow(win);
+        wasInit = true;
+    }
+
+    void Slider::translate(int x, int y) {
+        Component::translate(x, y);
+        sliderRect.x += x;
+        sliderRect.y += y;
     }
 
     Component::EventStatus Slider::handleEvent(const SDL_Event &event) {
@@ -540,6 +548,7 @@ namespace sdlw {
         panel->mapColors(win->graphics());
         input->setWindow(win);
         input->mapColors(win->graphics());
+        wasInit = true;
     }
 
     void ColorSelect::setColor(Color color) {
@@ -567,7 +576,8 @@ namespace sdlw {
 
     void ColorSelect::setWindow(Window *window) {
         Expandable::setWindow(window);
-        finalize();
+        if (!wasInit)
+            finalize();
     }
 
     std::string ColorSelect::hex(char c) {
@@ -819,10 +829,6 @@ namespace sdlw {
     void Dropdown::setFactory(FactoryCallback &&fcb) {
         addButton->setCallback([this, fact = std::move(fcb)](Button *) {
             addComponent(fact((int)elems.size()));
-            //elems.push_back(fact((int)elems.size()));
-            //elems.back()->setDims(elemRect.w, elemRect.h);
-            //elems.back()->setWindow(win);
-            //elems.back()->mapColors(win->graphics());
         });
     }
 

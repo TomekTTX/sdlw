@@ -264,7 +264,7 @@ namespace sdlw {
     public:
         enum class ExpandDir { UP, DOWN, LEFT_UP, RIGHT_UP, LEFT_DOWN, RIGHT_DOWN };
     protected:  
-        bool expanded = false;
+        bool expanded = false, wasInit = false;
         std::string text;
         std::unique_ptr<Panel> panel;
         SDL_Point expOffset{};
@@ -357,6 +357,7 @@ namespace sdlw {
         inline void setStepNo(int newStep) {
             val = min + 1.f * newStep * step; dragDiff({ 0,0 });
         }
+        void translate(int x, int y) override;
 
         EventStatus handleEvent(const SDL_Event &event) override;
         void draw(Graphics &g) override;
@@ -449,8 +450,8 @@ namespace sdlw {
         using FactoryCallback = std::function<std::unique_ptr<Component>(int)>;
         enum Flags { ADD = 0x1, DEL = 0x2, SWAP = 0x4 };
 
-        static constexpr int buttonSize = 30;
-        static constexpr int buttonSpace = 10;
+        static constexpr int buttonSize = 20;
+        static constexpr int buttonSpace = 5;
     private:
         SDL_Rect elemRect;
         std::unique_ptr<Button> addButton{};
